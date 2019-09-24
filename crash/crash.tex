@@ -1,0 +1,369 @@
+\documentclass[a4paper, 11pt]{article}
+
+\usepackage{ifthen}
+\usepackage[latin1]{inputenc}
+
+\newcommand{\nnsection}[1]{
+\section*{#1}
+\addcontentsline{toc}{section}{#1}
+}
+
+\begin{document}
+
+\begin{center}
+\vspace{20pt}
+\textbf{\large An Erlang primer}\\
+\vspace{10pt}
+\textbf{Johan Montelius}\\
+\vspace{10pt}
+\today{}
+\end{center}
+
+\nnsection{Introduction}
+
+This is not a crash course in Erlang since there are plenty of
+tutorials available on the web. I will however describe the tools that
+you need so that you can get a programming environment up and
+running. I will take for granted that you know some programming
+languages, have heard of functional programing and that recursion is
+not a mystery to you.
+
+\section{Getting started}
+
+If you run on your own computer you need to install the Erlang
+development environment. If you're running a one of the KTH computers
+this is probably already done.
+
+The first thing you need to do is download the Erlang SDK. This is
+found at www.erlang.org and is available both as a Windows binary and
+as source that you can make with the usual tools available on a Unix
+or even MacOs platform. If your using for example Ubuntu then the
+Erlang system is avialable in the repository.
+
+The SDK includes a compiler, all the programming libraries and virtual
+machine. It does not include a development environment. You can also
+download the Erlang manual in HTML.
+
+\subsection{Erlang}
+
+When you have installed Erlang you should be able to start an Erlang
+shell. You do this either by starting Erlang found in the regular
+Windows program listing or by hand from a regular shell. Since you
+later will need to set runtime parameters you need to learn how to
+start erlang by hand. Open a regular shell and type:
+
+\begin{verbatim}
+erl
+\end{verbatim}
+
+\noindent This should start the Erlang shell and you should see someting like this:
+
+\begin{verbatim}
+Erlang (BEAM) emulator version 5.6.1 [source] [smp:4] 
+[async-threads:0] [hipe] [kernel-poll:false]
+
+Eshell V5.6.1  (abort with ^G)
+1>  
+\end{verbatim}
+
+\noindent Type {\tt help().} (note the dot) followed by return to see all the
+shell commands and {\tt halt().} to exit the shell.
+
+
+\subsection{Emacs}
+
+As an development environment you need a text editor and what is
+better than Emacs. Download it from www.gnu.org/software/emacs/,
+available both for Unix, Mac and Windows. Ubuntu users will find it in
+the repository.
+
+You need to add the code below to your {\tt .emacs} file (provided
+that you have Erlang installed under {\tt C:/Program Files/}). This
+will make sure that the Erlang mode is loaded as soon as you open a
+{\tt .erl} file and that you can start an Erlang shell under Emacs
+etc. Change the {\tt <Ver>} and {\tt <ToolsVer>} to what is right in
+your system. On Linux it will look similar but the install
+directory is something like {\tt /usr/local/lib/erlang/}.
+
+Note! If you cut and past this text the '-character will not be a
+'-character, if you see what I mean. When you load the file in emacs
+you will have errors. If you do cut and paste then write in by hand
+``'erlang-start''. This is true for all cut and paste from pfd
+documents, things might not be what they appear to be so be careful.
+
+\begin{verbatim}
+  (setq load-path 
+    (cons  
+      "C:/Program Files/erl<Ver>/lib/tools-<ToolsVer>/emacs" 
+      load-path))
+  (setq erlang-root-dir 
+      "C:/Program Files/erl<Ver>")
+  (setq exec-path 
+    (cons 
+       "C:/Program Files/erl<Ver>/bin" 
+       exec-path))
+  (require 'erlang-start)
+\end{verbatim}
+
+\noindent You will have to find your emacs home directory where the file should
+be placed. If you're on the KTH student computers then the home area
+is ``h:'' but you then need to set the ``HOME'' environment variable
+so that emacs finds its way. 
+
+If everything works you should be able to start an Erlang shell inside
+Emacs by {\tt M-x run-erlang} ({\tt M-x} is $<escape>$ followed by
+x). A shell inside Emacs will allow you to quickly compile and run
+programs but when we experiment with distributed applications you need
+to run these in separate shells so make sure that you also know how
+start an Erlang shell manually.
+
+\subsection{Eclipse}
+
+If you prefer to use Eclipse you can install a Erlang plugin and do
+your development inside Eclipse. Fell free to use whatever
+environment you want.
+
+\section{Hello World}
+
+Open a file {\tt hello.erl} and write the following:
+
+\begin{verbatim}
+-module(hello).
+
+-export([world/0]).
+
+world()->
+  "Hello world!".
+\end{verbatim}
+
+\noindent Now open a Erlang shell,  compile and load the file with the command
+{\tt c(hello).} and, call the function {\tt hello:world().}.  Remember
+to end commands in th shell with a dot. If things work out you have
+successfully written, compiled and executed your first Erlang program.
+
+Find the Erlang documentation and read the ``Getting started''
+section. 
+
+\section{Concurrent Programming}
+
+Erlang was designed for concurrent programming. You will quickly learn
+how to divide your program into communicating processes and thereby
+give it far better structure. Try the following:
+
+\begin{verbatim}
+-module(wait).
+-export([hello/0]).
+
+hello() ->
+    receive
+      X -> io:format("aaa! surprise, a message: ~s~n", [X])
+    end.
+\end{verbatim}
+
+\noindent The {\tt io:format} procedure will output the string to the stdout and
+replace the control characters (characters preceded by a tilde) with
+the elements in the list. The {\tt ~s} means that the next element in
+the list should be a string, {\tt ~n} simply outputs a newline. Load
+the above module and execute the command:
+
+\begin{verbatim}
+   P = spawn(wait, hello, []).
+\end{verbatim}
+
+\noindent The variable {\tt P} is now bound to the {\em process identifier} of
+spawned process. The process was created and called the procedure {\tt
+  hello/0} (this is how we name a function with zero arguments). It is
+now suspended waiting for incoming messages. In the same Erlang shell
+execute the command:
+
+\begin{verbatim}
+   P ! "hello".
+\end{verbatim}
+
+\noindent This will send a message, in this case a string ``hello'', to the
+process that now wakes up and continues the execution.
+
+To make life easier one often register the process identifiers under
+names that can be access by all processes. If two processes should
+communicate they must know the process identifier. Either a process is
+given the identifier to the other process when it is created, in a
+message or, through the registered name of the process. Try this in a
+shell (first type {\tt f()} to make the shell forget the previous
+binding to P):
+
+\begin{verbatim}
+   P = spawn(wait, hello, []).
+\end{verbatim}
+
+\noindent Now register the process identifier under the name ``foo''.
+
+\begin{verbatim}
+   register(foo, P).
+\end{verbatim}
+
+\noindent And then send the process a message.
+
+\begin{verbatim}
+   foo ! "hello".
+\end{verbatim}
+
+\noindent In this example the only thing we sent was a string but we can send
+arbitrary complex data structures. The {\tt receive} statement can
+have several clauses that try to match incoming messages. Only if a
+match is found will a clause be used. Try this:
+
+\begin{verbatim}
+-module(tic).
+-export([first/0]).
+
+first() ->
+    receive
+      {tic, X} -> 
+          io:format("tic: ~w~n", [X]),
+          second()
+    end.
+
+second() ->
+    receive
+      {tac, X} -> 
+          io:format("tac: ~w~n", [X]),
+          last();
+      {toe, X} -> 
+          io:format("toe: ~w~n", [X]),
+          last()
+    end.
+
+last() ->
+    receive 
+      X ->
+          io:format("end: ~w~n", [X])
+    end.
+\end{verbatim}
+
+
+\noindent Then in a shell execute the following commands:
+
+\begin{verbatim}
+
+P = spawn(tic, first, []).
+
+P ! {toe, bar}.
+
+P ! {tac, gurka}.
+
+P ! {tic, foo}.
+
+\end{verbatim}
+
+\noindent In what order where they received by the process. Note how messages
+are queued and how the process selects in what order to process them.
+
+
+\section{Distributed Programming}
+
+Distributed programming is extremely easy in Erlang, the only problem
+we will have is finding the name of our node. The Erlang distributed
+systems normally work using domain names rather than explicit IP
+addresses. This could be a problem since we're working with a set of
+laptops that are not regularly given names in the DNS. There is a work
+around for this that we will use.
+
+Connect to the WLAN, login and make sure that you have a access to the
+Internet. Run {\tt ipconfig} or {\tt ifconfig} to find out what IP address
+you have been allocated. You will use this IP address explicitly when 
+starting an Erlang node.
+
+\subsection{node name}
+
+When you start Erlang you can make it network aware by providing a
+name. You also would like to give it a secret cookie. Any node that
+can prove to have knowledge of the cookie will be trusted to do just
+about anything. This is of course quite dangerous and it's very easy
+for a malicious node to close a whole network down.
+
+\noindent Start a new Erlang shell with the following command, replacing the IP
+address to whatever you have.
+
+\begin{verbatim}
+  erl -name foo@130.237.250.69 -setcookie secret
+\end{verbatim}
+
+\noindent In the Erlang shell you can now find the name of your node with the
+bif {\tt node()}. It should look something like {\tt 'foo@130.237.250.69'}. 
+
+Doing the same if you're running Erlang under Emacs is slightly
+more tricky. You have to set a lisp variable that is used when Emacs
+starts Erlang. Type {\tt M-x eval-expression} and evaluate the function.
+
+\begin{verbatim}
+(set 'inferior-erlang-machine-options 
+    '("-name" "foo@130.237.250.69" "-setcookie" "secret"))
+\end{verbatim}
+
+\noindent You can also set the environment variable {\tt ERL\_FLAGS} to the same
+string or include it in your {\tt .emacs} file. This will however
+prevent you from running multiple Erlang shells on the same node. You
+would also have to change this every time you get a new IP address. 
+
+Start a second Erlang shells now using the name {\tt bar} on the same
+or another machine. Load and start the suspending hello process that
+we defined before on the {\em foo-node} and register it under the name
+{\tt wait}.
+
+Now on the {\em bar-node} try the following:
+
+\begin{verbatim}
+   {wait, 'foo@130.237.250.69'} ! "a message from bar".
+\end{verbatim}
+
+\noindent Note how interprocess communication in Erlang is handled in the same
+way regardless if the process is executing in the same shell, another
+shell or on another host. The only thing that has to be changes is how
+the Erlang shell is started and how to access external registered processes.
+
+{\it If you run on a computer where you can not open ports for
+  communication you will need to run Erlang in local distribution
+  mode. You then start Erlang with a short name as follows:}
+
+\begin{verbatim}
+erl -sname foo -setcookie secret
+\end{verbatim}
+
+{\it The rest is the same but use foo as the name without the IP address.}
+
+\subsection{ping-pong}
+
+\noindent If we could only send messages to registered processes it
+would not be a transparent system. We can send messages to any process
+but the problem is of course to get hold of the process
+identifier. There is no way to write this down and you can not use the
+cryptic ``$<$0.70.0$>$'' that the Erlang shell uses when it prints the
+value of a process identifier.
+
+The only processes that know the process identifier of a process is
+the creator of the process and the process itself. The process it self
+can find out by the built-in procedure {\tt self()}. Now we are of
+course allowed to pass the process identifiers around and even send
+them in a message so we can let other processes know. Once a process
+knows it can use the identifier and does not have to know if it is a
+local or remote process.
+
+Try to define a process on one machine {\tt ping}, that sends a
+message to a registered process on another machine with its own
+process identifier in the message. The process should the wait for a
+reply. The receiver on the other machine should look at the message
+and use the process identifier to send a reply.
+
+A world of warning, the send primitive {\tt !} will accept both
+registered names, remote names and process identifiers. This can
+sometime cause a problem. If you implement a concurrent system that is
+not distributed and have a registered processes under the name {\tt
+foo}, you could pass the atom {\tt foo} around and anyone could treat
+it as a process identifier. Now if we distribute this application a
+remote process will not be able to use it as a process identifier
+since the registration process is local to a node. So keep track of
+what you pass around, is it a process identifier (that can be used
+remotely) or is it a name under which a process is registered.
+
+
+\end{document}

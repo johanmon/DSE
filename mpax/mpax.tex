@@ -1,0 +1,104 @@
+\documentclass[a4paper,11pt]{article}
+
+\usepackage{ifthen}
+\usepackage[latin1]{inputenc}
+
+
+\newcommand{\nnsection}[1]{
+\section*{#1}
+\addcontentsline{toc}{section}{#1}
+}
+
+\begin{document}
+
+\begin{center}
+\vspace{20pt}
+\textbf{\large Paxy: the paxos protocol}\\
+\vspace{10pt}
+\textbf{Johan Montelius}\\
+\vspace{10pt}
+\today{}
+\end{center}
+
+\nnsection{Introduction}
+
+
+We will implement a sequentially consistent highly available
+server. 
+
+
+\nnsection{The Architecture}
+
+
+\nnsubsection{the failue model}
+
+We will divide our implementation into nodes. Processes within a node
+communicate using reliable channels and have access to perfect failure
+detectors. Communication between nodes is unreliable but provide fifo
+ordering of messages. Failure detection inbetween nodes are unreliable
+and wil not be used.
+
+A node behaves correctly until it crashes. When a node crashes it
+enters a non-operational state and sease to communicate with other
+nodes. The node will eventually recover and again enter operational
+mode, it the behaves correct until it crashes.
+
+The system should be availabel as long as at most one node is
+non-operational. If more than one node is non-operational the system
+coudl be unavailable but should still have a sequential consistent
+behaviour.
+
+The failure model is follows: at most one node can crash at any
+given moment. A node that has crashed can be restarted but no other
+node will fail untill the node is fully operational.
+
+\nnsubsection{nodes a processes}
+
+The architecture consist of the main node; the primary, the slave and
+the arbitrator. The primary and slave nodes have three processes each
+proposer, acceptor and server, the arbitrator only has the acceptor
+process and is only needed in case the primary or slave node has
+crahed.
+
+The proposers and acceptors implement the multi-paxos protocol and the
+server processes serve as the learners. The servers will respond
+directly to the clint applications.
+
+A client node will use a process that handles the communication with
+the replicated server. The client process provides an assynchrounous
+message interface; the application can send messages to it that it
+will forward to the replicated server. If the 
+
+
+\nnsubsection{the client process}
+
+The client process has a two coordinators that it will be able to
+communicate with; one is the master and one is the slave. It will have
+apreference for communicating with the master but if it suspects that
+the master is unavailable it will resend messages to the slave.
+
+The client process will resend messages until it receives an
+acknowledgment from either of the proposers. Since all clients will
+favour the primary the primary will maintain a role as the sole
+proposer. When it is slow in responding clients will shift to the
+slave proposer but will return to the primary proposer as soon as
+possible. This mean that the primary and slave proposers might both be
+activated if the connection to the primary is faulty. 
+
+\nnsubsection{proposers and acceptors}
+
+The proposers and acceptors implement the multi-paxos protocol.
+
+\subsection{}
+  
+\nnsection{Discussion}
+
+\nnsubsection{at-least-once message delivery}
+
+Since the client process will resend messages to the slave proposer in
+case the primary is slow in responding we will have a at-least-once
+semantics regarding message delivery from the client application
+towrds the replicated server. It is left for the application layer to
+resole this and possibly impement a exactly-oce semantics. This 
+
+\end{document}

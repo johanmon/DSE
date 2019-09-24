@@ -1,0 +1,704 @@
+\documentclass[a4paper, 11pt]{article}
+
+\usepackage{ifthen}
+\usepackage[latin1]{inputenc}
+
+\newcommand{\nnsection}[1]{
+\section*{#1}
+\addcontentsline{toc}{section}{#1}
+}
+
+\begin{document}
+
+\begin{center}
+\vspace{20pt}
+\textbf{\large Routy: a small routing protocol}\\
+\vspace{10pt}
+\textbf{Johan Montelius}\\
+\vspace{10pt}
+\textbf{\today}
+\end{center}
+
+\nnsection{Introduction}
+
+Your task is to implement a link-state routing protocol in Erlang. The
+link-state protocol is used in for example OSPF, the most used routing
+protocol for Internet routers. The aim of this exercise is that you
+should be able to:
+
+\begin{itemize}
+\item describe the structure of a link-state routing protocol
+\item describe how a consistent view is maintained
+\item reflect on the problems related to network failures
+\end{itemize}
+
+We will implement routing processes with logical names such as {\tt
+london}, {\tt berlin}, {\tt paris} etc. Routers can be connected to
+each other with directional (one-way) links  and they can only communicate with
+the routers that they are directly connected to.
+
+The routing processes should be able to receive a message of the form
+{\tt \{route, london, berlin, "Hello"\}} and determine that it is a
+message from {\tt berlin} that should routed to {\tt london}. A
+routing process should consult its routing table and determine which
+{\em gateway} (a routing process that it has direct connection to) is
+best suited to deliver the message. If a message arrives at it's
+destination (the router called {\tt london}) it is printed on the
+screen. Messages for which paths are not found are simply thrown away,
+no control messages are sent back to the sender.
+
+During the seminar you will be divided into groups representing
+regions of the world (Europe, Asia, Africa etc). Each Erlang engine
+that you run will have a name of a country in that region (Sweden, UK,
+France ect). Assume that the Erlang shell named {\tt sweden}, is
+running on a machine with the IP address 130.123.112.23. Routing
+processes that we create will be registered ar {\tt r1}, {\tt r2}
+etc. The adress of a routing process is thus for example:
+
+\begin{verbatim}
+      {r1, 'sweden@130.123.112.23'}
+\end{verbatim}
+
+The routing process will also have a logical name, for example {\tt
+  stockolm}, but this is a name on a different level.
+
+Your task before the seminar will be to have a router up and running. At the
+seminar we will connect the routers together.
+
+Before implementing the operations I advice you to study the {\tt
+  lists} library and learn how {\tt keyfind/3}, {\tt keydelete/2},
+{\tt map/2} and {\tt foldl/3} works. It will make your life easier
+but, if you don't understand what {\tt foldl/3} does, then don't even
+try to use it.
+
+\section{The map}
+
+Think of a good representation of a directional map where you should
+easily be able to update the map and find nodes directly connected to
+a given node. We could represent it as a list of entries where each
+entry consist of a city with a list of directly connected cities. This
+will give us a very quick way of updating the map, simply replace an
+entry with a new entry. For our purposes this is fine, in other
+situations one might want other operations to be efficient and
+therefore need another representation.
+
+In a module {\tt map}, implement and export the
+following functions:
+
+\begin{itemize}
+
+\item{\bf new():} returns an empty map (a empty list)
+
+\item{\bf update(Node, Links, Map):} updates the Map to reflect that
+  Node has directional links to all nodes in the list Links. The old
+  entry is removed.
+
+\item{\bf reachable(Node, Map):} returns the list of nodes directly reachable from Node.
+
+\item{\bf all\_nodes(Map):} returns a list of all nodes in the map,
+  also the ones without outgoing links. So if {\tt berlin} is linked
+  to {\tt london} but {\tt london} does not have any outgoing links
+  (and thus no entry in the list), {\tt london} should still be in the
+  returned list.
+  
+\end{itemize}
+
+\noindent Before going further make sure that your implementation of map
+works. In the tests below the map is represented as a list of entries
+holding the node and the links. Try the following tests:
+
+\begin{verbatim}
+ > map:new().
+[]
+
+> map:update(berlin, [london, paris], []).
+[{berlin,[london,paris]}]
+
+ > map:reachable(berlin, [{berlin,[london,paris]}]).
+[london,paris]
+
+>map:reachable(london, [{berlin,[london,paris]}]).
+[]
+
+>map:all_nodes([{berlin,[london,paris]}]).
+[paris,london,berlin]
+
+>map:update(berlin, [madrid], [{berlin,[london,paris]}]).
+[{berlin, [madrid]}]
+\end{verbatim}
+
+\noindent Note that the representation of the map should not be known
+by the users of a map. A module using a map should only use the four
+functions described above.
+
+\section{Dijkstra}
+
+The Dijkstra algorithm will compute a {\em routing table}. The table
+is represented by a list with one entry per node where the entry
+describes which gateway, city,  should be used to reach the node. The input to
+the algorithm is: 
+\begin{itemize}
+\item a map 
+\item a list of {\em gateways} to which we have direct access.
+\end{itemize}
+
+An example of a routing table is:
+
+\begin{verbatim}
+[{berlin,madrid},{rome,paris},{madrid,madrid},{paris,paris}]
+\end{verbatim}
+
+This table says that if we want to send something to {\tt berlin} we
+should send it to {\tt madrid}. Note that we also include information
+that in order to reach {\tt madrid} we should send the message to {\tt
+  madrid}.
+
+\noindent A router will know its own name, a set of gateways, a map
+of the network and a hopefully not to old routing table.
+
+The map will describes how all other nodes, including the gateways,
+are connected. The map will not include the router itself. When we
+build the router we should see that the map is updated quite
+frequently. The routing table is however, only updated once in a
+while (when we say so).
+
+\subsection{a sorted list}
+
+In the algorithm we will use a sorted list when we calculate a new
+routing table. We will start by implementing operations on a sorted
+list and then look at the algorithm itself.
+
+Each entry in the list will hold the name of a node, the length of the
+path to the node and the gateway that we should use to reach the
+node. An entry showing that {\tt berlin} could be reached in 2 hops
+using {\tt paris} as a gateway could look like follows:
+
+\begin{verbatim}
+  {berlin, 2, paris}
+\end{verbatim}
+
+The list is sorted based on the length of the path. We should be able
+to update the list to give a node a new length and a new gateway but
+when we do an update it is important that we update an existing entry
+and that we actually have an entry in the list to update.
+
+To implement the update procedure it could be an advantage to first
+implement two procedures that will help us. 
+In a module {\tt dijkstra} implement the
+two procedures:
+
+\begin{itemize}
+
+\item {\bf entry(Node, Sorted):} returns the length of the shortest
+path to the node or $0$ if the node is not found.
+
+\item {\bf replace(Node, N, Gateway, Sorted):} replaces the entry for Node
+in Sorted with a new entry having a new length N and Gateway. The
+resulting list should of course be sorted.
+\end{itemize}
+
+Note that in {\tt replace/4} we require a entry for the node to be
+present in the sorted list. Be careful and make sure that the
+resulting list is sorted based on the new entry.
+
+\noindent Now when we have these two procedures it is easier to
+implement the update procedure.
+
+\begin{itemize}
+\item {\bf update(Node, N, Gateway, Sorted)}: update the list Sorted
+given the information that Node can be reached in N hops using
+Gateway. If no entry is found then no new entry is added. Only if we
+have a better (shorter) path should we replace the existing entry.
+\end{itemize}
+
+\noindent The procedure is implemented simply by first calling the
+{\tt entry/2} procedure to get the length of the existing path. If we
+have a better (shorter) path then we use the {\tt replace/4}
+procedure. Why did we make {\tt entry/2} return 0 if the node is not
+found?
+
+\begin{verbatim}
+> dijkstra:update(london, 2, amsterdam, []).
+[]
+
+> dijkstra:update(london, 2, amsterdam, [{london, 2, paris}]).
+[{london,2,paris}]
+
+> dijkstra:update(london, 1, stockholm, 
+      [{berlin, 2, paris}, {london, 3, paris}]).
+[{london,1,stockholm}, {berlin, 2, paris}]
+\end{verbatim}
+
+\subsection{the iteration}
+
+This is the heart of the algorithm. We will take a sorted list of
+entries, a map and a table that is what we have constructed so far. We have three cases:
+
+\begin{itemize}
+\item If there are no more entries in the sorted list then we are done and the
+given routing table is complete.  
+
+\item If the first entry is a dummy entry with an infinite path to a
+  city we know that the rest of the sorted list is also of infinite length and 
+ the given routing table is complete.  
+
+\item Otherwise, take the first entry in
+the sorted list, find the nodes in the map reachable from this entry
+and for each of these nodes update the Sorted list. The entry that
+you took from the sorted list is added to the routing table. 
+\end{itemize}
+
+Iterate this until we have no more entries in the sorted list - the
+table is then complete.
+
+What is happening here? If the entry says that {\tt berlin} can be
+reached in three hops by going through {\tt paris} and the map says
+that berlin is directly linked to {\tt copenhagen}, then copenhagen is
+reachable in four hops going through {\tt paris}. We might already have
+a entry for {\tt copenhagen} using only three hops over {\tt
+amsterdam} and then nothing is done, but if we have an entry with more
+than four hops we will update the list.
+
+If we have an entry for {\tt copenhagen} with less than three
+hops, this entry has already been processes and removed from the
+list. This explains why we do not want to add another entry for {\tt
+copenhagen}.
+
+Note, since our network is connected by directional links it could
+actually be the case that some nodes in our map are not reachable at
+all. If {\tt ulanbator} has a link to {\tt beijing} but there is no
+link from {\tt beijing} to {\tt ulanbator} then the world will have
+{\tt ulanbator} in the map. If all cites in the map are chosen to be
+part of the original sorted list that we try to iterate over we will
+in the end find an entry:
+
+\begin{verbatim}
+{ulanbator, inf, unknown}
+\end{verbatim}
+
+as the first element in the list. If we have this situation we can
+conclude that the routing table we have is complete and contains all
+reachable cities. 
+
+\begin{itemize}
+\item {\bf iterate(Sorted, Map, Table)}: construct a table given a sorted
+list of nodes, a map and a table constructed so far.
+\end{itemize}
+
+The second case is to handle the situation when nodes in the map are 
+not reachable. In order to capture this we take a closer look at
+the first node in the sorted list. If we have a node with the length
+set to infinity, {\tt inf}, then this node (nor any other node after
+it since the list is sorted) cannot be reached and need not be part of
+the final table.
+
+This is a test of the iterate procedure:
+
+\begin{verbatim}
+> dijkstra:iterate([{paris, 0, paris}, {berlin, inf, unknown}], 
+       [{paris, [berlin]}], []).
+[{paris, paris},{berlin,paris}]
+\end{verbatim}
+
+Now in the same module implement the function {\tt table/2} that
+should take a list of gateways and a map and produce a routing table
+with one entry per node in the map. The table could be a list of
+entries where each entry states which gateway to use to find the
+shortest path to a node (if we have a path). Follow the outline below
+and you will have your program running in no-time.
+
+\begin{itemize}
+\item {\bf table(Gateways, Map)}: construct a routing table given the
+gateways and a map. 
+\end{itemize}
+
+List the nodes of the map and construct a initial sorted list. This
+list should have dummy entries for all nodes with the length set to
+infinity, {\tt inf}, and the gateway to {\tt unknown}. The entries of
+the gateways should have length zero and gateway set to itself. Note
+that {\tt inf} is greater than any integer (try). When you have
+constructed this list you can call iterate with an empty table. This
+is a test of the table procedure:
+
+\begin{verbatim}
+> dijkstra:table([paris, madrid], [{madrid,[berlin]}, {paris, [rome,madrid]}]).
+[{berlin,madrid},{rome,paris},{madrid,madrid},{paris,paris}]
+\end{verbatim}
+
+To complete the dijkstra module we need one more procedures. 
+
+\begin{itemize}
+\item {\bf route(Node, Table)} search the routing table and return the
+gateway suitable to route messages to a node. If a gateway is found we
+should return {\tt \{ok, Gateway\}} otherwise we return {\tt notfound}.
+\end{itemize}
+
+The {\tt table/2} and {\tt route/2} are the only procedures that we
+need to export. No one outside the module knows how the table is
+represented so you can re-implement it and make it even more efficient.
+
+\section{Interfaces}
+
+A router will also need to keep track of a set of interfaces. A
+interface is described by the symbolic name ({\tt london}), a {\em process
+reference} and a {\em process identifier}. When you implement the router it
+will be clear what a process reference is. Implement the following procedures:
+
+
+\begin{itemize}
+\item {\bf new()} return an empty set of interfaces.
+
+\item {\bf add(Name, Ref, Pid, Intf)} add a new entry to the set and
+return the new set of interfaces.
+
+\item  {\bf remove(Name, Intf)} remove an entry given a name of an interface,
+return a new set of interfaces.
+
+\item  {\bf lookup(Name, Intf)} find the process identifier given a name,
+return {\tt \{ok, Pid\}} if found otherwise {\tt notfound}.
+
+\item  {\bf ref(Name, Intf)} find the reference given a name and return {\tt \{ok, Ref\}} or {\tt notfound}.
+
+\item  {\bf name(Ref, Intf)} find the name of an entry given a reference and
+return {\tt \{ok, Name\}} or {\tt notfound}.
+
+\item  {\bf list(Intf)} return a list with all names.
+
+\item  {\bf broadcast(Message, Intf)} send the message to all interface processes.
+\end{itemize}
+
+\noindent It should be quite straight forward to implement this. 
+
+\section{The history}
+
+When we send link-state messages around we need to avoid cyclic
+paths; if we are not careful we will resend messages forever. We can
+solve this in two ways, either we set a counter on each message and
+decrement the counter in each hop, hoping that it will reach all
+routers before the counter reaches zero, or we keep track of what
+messages we have seen so far.
+
+We will try the later strategy but to avoid having to keep a copy of
+all messages we will tag each constructed message with a per router increasing
+message number. If we know that we have seen message {\tt 15} from
+{\tt london} then we know that messages from {\tt london} with a lower
+number are old and can be thrown away. This strategy not only avoids
+circular loops but also prevents old messages from being delayed and
+later be allowed to change our view of the network. 
+
+Implement a data structure called history that keeps track of what
+messages that we have seen. In module {\tt hist} implement two
+procedures.
+
+{\bf new(Name)} Return a new history, where messages from Name will
+always be seen as old.
+
+{\bf update(Node, N, History)} Check if message number N from the Node is
+old or new. If it is old then return {\tt old} but if it new return
+{\tt \{new, Updated\}} where Updated is the updated history.
+
+To determine if a link-state message is old or new one need of course
+not store the message itself nor all previously received messages. The
+only thing we have to keep track of is the highest counter value
+received from each node. Can you create an entry for a node that will
+make any message look old?
+
+\section{The router}
+
+The router should be able to, not only route messages through a
+network of connected nodes but also, maintain view of the
+network and construct optimal routing tables. Each
+routing process will have a state:
+
+\begin{itemize}
+\item a symbolic name such as {\tt london}
+\item a counter
+\item a history of received messages
+\item a set of interfaces
+\item a routing table
+\item a map of the network
+\end{itemize}
+
+\noindent When a new router process is created it will sett all its
+parameters to initial empty values. We will also register the router
+process under a uniqe name (unique for the erlang machine it is
+running on, for example \verb+r1+, \verb+r2+, etc). 
+
+\begin{verbatim}
+-module(routy).
+
+-export([start/2, stop/1, ...]).
+
+start(Reg, Name) ->
+    register(Reg, spawn(fun() -> init(Name) end)).
+    
+stop(Node) ->
+    Node ! stop,
+    unregister(Node).
+
+init(Name) ->
+    Intf = intf:new(),
+    Map = map:new(),
+    Table = dijkstra:table(Intf, Map),
+    Hist = hist:new(Name),
+    router(Name, 0, Msgs, Intf, Table, Map).
+\end{verbatim}
+
+
+\noindent To route a message to a node, the router will simply consult the
+routing table to find the best gateway and then find the pid of that
+gateway given the list of interfaces. This is the easy part; the hard
+part is to maintain a consistent view of the networks as interfaces
+are added and removed. The algorithm of a links-state protocol is as follows:
+
+\begin{itemize}
+\item determine which nodes that you are connected to
+\item tell all neighbors in a {\em link-state message}
+\item if you receive a link-state message that you have not seen
+before pass it along to your neighbors
+\end{itemize}
+
+\noindent A node will thus collect link-state messages from all other
+routers in the network. The link-state messages are exactly what we
+need to build a map. Since we also know which nodes we can reach
+directly, our gateways, we can use Dijkstra's algorithm to generate a
+routing table. 
+
+In our first effort we will however only implement a process that can
+connect or disconnect to other nodes in the system and update its set
+of interfaces.
+
+\subsection{adding interfaces}
+
+We will user {\em monitors} to detect if a node is
+unreachable; a monitor will send an {\tt 'DOWN'} message to the
+process and we can then remove links to the node. A skeleton code for
+the router process could look as follows.
+
+\begin{verbatim}
+
+router(Name, N, Hist, Intf, Table, Map) ->
+    receive 
+%            :
+%            :
+        {add, Node, Pid} ->
+            Ref = erlang:monitor(process,Pid),
+            Intf1 = intf:add(Node, Ref, Pid, Intf),
+            router(Name, N, Hist, Intf1, Table, Map);
+
+        {remove, Node} ->
+            {ok, Ref} = intf:ref(Node, Intf),
+            erlang:demonitor(Ref),
+            Intf1 = intf:remove(Node, Intf),
+            router(Name, N, Hist, Intf1, Table, Map);
+
+        {'DOWN', Ref, process, _, _}  ->
+            {ok, Down} = intf:name(Ref, Intf),
+            io:format("~w: exit recived from ~w~n", [Name, Down]),
+            Intf1 = intf:remove(Down, Intf),
+            router(Name, N, Hist, Intf1, Table, Map);
+
+%            :
+%            :
+
+        {status, From} ->
+            From ! {status, {Name, N, Hist, Intf, Table, Map}},
+            router(Name, N, Hist, Intf, Table, Map);                 
+
+        stop ->
+            ok
+    end.
+\end{verbatim}
+
+Note that creating a monitor for a process that does not exist will
+fail nor throw an exception. What will happen is that you're
+imediately sent a down message. The behaviour is thus the same if you
+add a monitor to a process that dies or if you add monitor to a
+process that died 10 milliseconds ago.
+
+The {\tt \{status, From\}} message can be used to do a pretty-print of
+the state. Add a function that sends a \verb+status+ message to a
+process, receives the reply and displays the information.
+
+When we start Erlang shells we will all have to use the same magic
+cookie so let's agree on {\tt routy}. We could also use a flag to
+reduce the underlying network traffic. The default behavior for
+distributed Erlang is to try to connect to all nodes available in the
+network. Connecting A with B where B is already connected to C will
+create a connection between A and C. Since we will allow our nodes to
+ crash we can turn this feature off.
+
+\begin{verbatim}
+erl -name sweden@130.123.112.23 -setcookie routy -connect_all false
+\end{verbatim}
+
+To try to keep things under control we name Erlang nodes after
+countries and routers after names in that country. Start two routers
+and send them messages so that they connect to each other. Terminate
+one of them and see that things work.
+
+\subsection{link-state messages}
+
+Next we need to implement the link-state message. When this is sent it
+is tagged with the counter value. The counter is then updates so
+subsequent messages will have a higher value. When receiving a
+links-state message a router must check if this is an old or new
+message.  The handling of link-state messages can  be implemented as
+follows:
+
+\begin{verbatim}
+        {links, Node, R, Links} -> 
+           case hist:update(Node, R, Hist) of
+            {new, Hist1} -> 
+                  intf:broadcast({links, Node, R, Links}, Intf), 
+                  Map1 = map:update(Node, Links, Map),
+                  router(Name, N, Hist1, Intf, Table, Map1); 
+            old ->
+                 router(Name, N, Hist, Intf, Table, Map) 
+        end;
+\end{verbatim}
+
+\noindent When we have updated our map we should also update the routing
+table. This is where we invoke the Dijkstra algorithm. We should do it
+periodically, maybe every time we receive a link-state message or
+better every time the map changes. In our experiment we will do it
+manually. We add a method {\tt update} that we will send to order the
+router to update its routing table.
+
+\begin{verbatim}
+        update ->
+          Table1 = dijkstra:table(intf:list(Intf), Map),
+          router(Name, N, Hist, Intf, Table1, Map);
+\end{verbatim}
+
+\noindent We also add a message so that we manually can order our router to
+broadcast a link-state message. This should of course be done
+periodically or every time a link is added but we want to experiment
+with inconsistent maps so we keep this as a manual procedure.
+
+\begin{verbatim}
+        broadcast ->
+          Message = {links, Name, N, intf:list(Intf)},
+          intf:broadcast(Message, Intf),
+          router(Name, N+1, Hist, Intf, Table, Map);       
+\end{verbatim}
+
+
+\subsection{testing what we have}
+
+We can now test our protocol by starting several routing processes and
+letting them connect to each other. Let's call Erlang machines for countries
+and routers for cities. So start a Erlang node with the command:
+
+\begin{verbatim}
+erl -name sweden@130.123.112.23 -setcookie routy -connect_all false
+\end{verbatim}
+
+Load the {\tt routy} and {\tt dijkstra} module and then start routers
+for different cities in Sweden. Then connect the routers by manually
+sending them {\tt add} messages. Note that the add message contains
+both the logical name ({\tt stockholm}) and the process identifier of
+the router (for example {\tt \{r1, 'sweden@130.123.112.23'\}}).
+
+\begin{verbatim}
+(sweden@130.123.112.23)>routy:start(r1, stockholm).
+
+(sweden@130.123.112.23)>routy:start(r2, lund).
+
+(sweden@130.123.112.23)>lund ! {add, stockholm, {r1, 'sweden@130.123.112.23'}}.
+true
+\end{verbatim}
+
+If everything works out ok, you should be able to build a network of
+routers. When you send the message {\tt broadcast} to a router the
+link-state messages should be generated and after a {\tt update}
+message the routing table should be computed. Try it with some Erlang
+nodes running on one machine. If you have problems with the long
+network names you could start Erlang using short node names {\tt
+-sname} or simply have all routers in the same Erlang process.
+
+\subsection{routing a message}
+
+It's now time to implement the actual routing. We have one easy case
+and that is when a message has actually arrived to the final
+destination.
+
+\begin{verbatim}
+     {route, Name, From, Message} ->
+          io:format("~w: received message ~w ~n", [Name, Message]),
+          router(Name, N, Hist, Intf, Table, Map);
+\end{verbatim}
+
+\noindent If the message is not ours we should forward it. If we find a suitable
+gateway in the routing table we simply forward the message to the
+gateway. If we do not find a routing entry or do not find a interface
+of a gateway we have a problem, simply drop the packet and keep
+smiling.
+
+\begin{verbatim}
+     {route, To, From, Message} ->
+          io:format("~w: routing message (~w)", [Name, Message]),
+          case dijkstra:route(To, Table) of
+             {ok, Gw} -> 
+                case intf:lookup(Gw, Intf) of
+                   {ok, Pid} ->
+                       Pid ! {route, To, From, Message};
+                   notfound ->
+                       ok
+                end;
+             notfound ->
+                ok
+          end,
+          router(Name, N, Hist, Intf, Table, Map);         
+\end{verbatim}
+
+\noindent In the implementation we make use of the fact that the
+routing table contains entries even for our own gateways. Could we
+also have a dummy entry for the node itself so that we would not need
+to have a special message entry to handle messages directed to the
+router itself?
+
+We also add a message so that a local user can initiate the routing of
+a message without knowing the name of the local router.
+
+\begin{verbatim}
+     {send, To, Message} ->
+          self() ! {route, To, Name, Message},
+          router(Name, N, Hist, Intf, Table, Map);
+\end{verbatim}
+
+This is how far you should have got before the seminar. Write up a two
+page report on what was difficult and how you solved it. At the
+seminar we should connect as many routers as possible, start killing
+nodes and watch how the network is still able to route messages.
+
+\section{The world}
+
+Form a group and be responsible for a region in the world (Europe,
+Africa, South America etc); coordinate with other groups so each group
+has it's own region. Then start a set of Erlang nodes on each machine
+where you give each Erlang node the name of a country (that is in your
+region).
+
+In each Erlang node you can now create one or more routers with
+registered names of cities in that country. Then start to connect the
+routers to each other. Note that all cities in the world must have
+unique names so even if there is a Paris in Texas the network will only
+allow one node to be called {\tt paris}. Start to send messages to
+other nodes and see that it works. Note that since you have not
+implemented automatic broadcast and update functionality, you must do
+this manually.
+
+When things are working in your region chose two or more routers that
+should connect to other parts of the world. Make sensible connections
+to make it easier to understand what the network looks like. Can we
+send messages from Sydney to Oslo?
+
+If everything works ok, you can try to either stop routers, close
+Erlang nodes or simply disable the network card. Will the routing
+functionality still work? How long time does it take between a
+disabled network card and the delivery of a 'DOWN' message to the
+other nodes?
+
+
+\end{document}

@@ -1,0 +1,98 @@
+\documentclass[a4paper,11pt]{article}
+
+
+\usepackage{ifthen}
+\usepackage[latin1]{inputenc}
+
+\newcommand{\nnsection}[1]{
+\section*{#1}
+\addcontentsline{toc}{section}{#1}
+}
+
+\author{Johan Montelius}
+\title{Donny: available key value store}
+
+\begin{document}
+
+\maketitle
+
+\nnsection{Introduction}
+
+In this tutorial we're going to look at the Dynamo key value store
+implemented by Amazon. The Dynamo system is a complete distributed
+hash table with replicated data to provide a fault tolerant
+service. We're not going to implement a distributed hash table in this
+exercises rather look at the thing that makes Dynamo so special.
+
+Dynamo trades consistency for high availability. If things break down
+we will not guarantee consistency but at least we will be able to
+proceed. When things get back to normal we will detect the
+inconsistency and try to resolve the problems. 
+
+This tutorial is inspired by Dynamo but the result is so
+far from Dynamo that we will call it Donny. We will capture and handle
+the same problems but the setting is quite different.
+
+
+\section{Time and value}
+
+We will first implement some module that will be able to handle time
+stamped values. We will build a key value store but we will associate
+a set of values with each key. Each value is time stamped with a
+vector clock. If we know which value is the last value then there is
+only one value associated with the key but it could be that we have
+two values where we don't know which is the last written value.
+
+The vector clocks will only contain three indices so we can represent a
+vector by a tuple with three integers {\tt \{A,B,C\}}. A module {\tt time}
+will implement the following functions:
+
+\begin{itemize}
+\item {\tt create()} : returns a null time stamp
+\item {\tt increment(Index, Time)} : increment the index of the time stamp vector by one
+\item {\tt gt(T1, T2)} : evaluates to true if T1 is greater or equal to T2
+\end{itemize}
+
+
+
+
+\section{Donny}
+
+A process, called {\tt donny}, that will
+hold a key value store and be able to {\tt update} and {\tt lookup}
+values of the store. To separate how the key values are actually
+stored we first implement a module {\tt storage} that exports the functions:
+
+\begin{itemize}
+\item {\tt create()} : returns a empty store
+\item {\tt update(Key, Value, Store)} : returns the updated store where {\tt Key} is associated to {\tt Value}.
+\item {\tt lookup(Key, Value)} : returns the value associated to the {\tt Key}.
+\end{itemize}
+
+
+\begin{verbatim}
+        {add, Key, Value, Ref, Client} ->
+            Updated_store = storage:add(Key, Value, Store),
+            Client ! {ok, Ref},
+            loop(Updated_store);
+\end{verbatim}
+
+\begin{verbatim}
+	{lookup, Key, Ref, Client} ->
+	    io:format("key: ~w, ref: ~w, client: ~w~n", [Key, Ref, Client]),
+	    case storage:lookup(Key, Store) of
+		{value, {Key, Values}} ->
+		    io:format("values: ~w  ~w~n", [Client, Values]),
+		    Client ! {ok, Ref, Values};
+		false ->
+		    io:format("false: ~w~n", [Client]),
+		    Client ! {false, Ref}
+	    end,
+	    io:format("lookup done~n", []),
+	    loop(Store);
+    end.
+\end{verbatim}
+
+
+
+\end{document}

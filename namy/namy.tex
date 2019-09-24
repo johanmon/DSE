@@ -1,0 +1,451 @@
+\documentclass[a4paper, 11pt]{article}
+
+\usepackage{ifthen}
+\usepackage[latin1]{inputenc}
+
+\newcommand{\nnsection}[1]{
+\section*{#1}
+\addcontentsline{toc}{section}{#1}
+}
+
+\begin{document}
+
+\begin{center}
+\vspace{20pt}
+\textbf{\large Namy: a distributed name server}\\
+\vspace{10pt}
+\textbf{Johan Montelius}\\
+\vspace{10pt}
+\today{}
+\end{center}
+
+\nnsection{Introduction}
+
+Your task will be to implement a distributed name server similar to
+DNS. Instead of addresses we will store process identifiers to {\em
+hosts}. It will not be able to inter-operate with regular DNS servers
+but it will show you the principles of caching data in a tree
+structure.
+
+\section{The architecture}
+
+Our architecture will have four kind of nodes:
+\begin{itemize}
+\item {\bf servers}: are responsible for a domain and holds a set of
+registered hosts and sub-domain servers. Servers form a tree structure.
+
+\item{\bf resolver}: are responsible for helping client find addresses
+to hosts. Will query servers in a iterative way and keep a cache of
+answers.
+
+\item {\bf hosts}: are nodes that have a name and are registered in one
+server. Hosts will reply to ping messages.
+
+\item {\bf clients}: know only the address of a resolver and uses it
+to find addresses of hosts. Will only send a ping messages to a
+host and wait for a reply.
+
+\end{itemize}
+
+Separating the tasks of the server and the resolver will make the
+implementation cleaner and easier to understand. In real life DNS
+servers also take on the responsibility of a resolver. 
+
+
+\subsection{a server}
+
+This is how we implement the server. This is a vanilla set-up where we
+spawn a process and register it under the name {\tt server}. This
+means that we will only have one server running in each Erlang
+node. If you want to you can modify the code to take an extra argument
+with the name to register the server under. 
+
+\begin{verbatim}
+-module(server).
+-export([start/0, start/2, stop/0, init/0, init/2]).
+
+start() ->
+    register(server, spawn(server, init, [])).    
+
+start(Domain, DNS) ->
+    register(server, spawn(server, init, [Domain, DNS])).
+
+stop() ->
+    server ! stop,
+    unregister(server).
+	    
+init() ->
+    server([], 0).
+
+init(Domain, Parent) ->
+    Parent ! {register, Domain, {dns, self()}},
+    server([],0).
+
+\end{verbatim}
+
+Note that there are two ways to start a server. Either it will be the
+root server in our network or a server responsible for a
+sub-domain. If it's responsible for a sub-domain this name has to be
+registered in the parent server. Domain names are represented with
+atoms such as: {\tt se}, {\tt com}, {\tt kth} etc. Note that the {\em
+kth-server} will register with the {\em se-server} under the name {\tt
+kth} but it does not hold any information that it is responsible for
+the {\tt [kth, se]} sub-domain; this is implicit in the tree
+structure.
+
+The server process itself, will keep a list of key-value
+entries. Hosts that register will register a tuple {\tt \{host, Pid\}}
+and servers a tuple {\tt \{dns, Pid\}}.  The difference will be used
+by the resolver to prevent it from sending request to host nodes. 
+
+The server also keeps a time-to-live value that will be sent with each
+reply. The value is the number of seconds that the answer will be
+valid. In real life this is normally set to 24h but to experiment with
+caching we use seconds instead. The default value is zero second, that
+is no caching allowed.
+
+\begin{verbatim}
+server(Entries, TTL) ->
+    receive 
+        {request, From, Req}->
+            io:format("request ~w ", [Req]),
+            Reply = entry:lookup(Req, Entries),
+            From ! {reply, Reply, TTL},
+            server(Entries, TTL);
+        {register, Name, Entry} ->
+            Updated = entry:add(Name, Entry, Entries),
+            server(Updated, TTL);
+        {deregister, Name} ->
+            Updated = entry:remove(Name, Entries),
+            server(Updated, TTL);
+        {ttl, Sec} ->
+            server(Entries, Sec};
+        status ->
+            io:format("cache ~w~n", [Entries]),            
+            server(Entries, TTL);
+        stop ->
+            io:format("closing down~n", []),            
+            ok;
+        Error ->
+            io:format("strange message ~w~n", [Error]),
+            server(Entries, TTL)
+    end.
+\end{verbatim}
+
+Note that when the server receives a request it will try to look it up
+in its list of entries. The {\tt lookup/2} function will return {\tt
+unknown} if not found. This is something that you will have to
+implement. It does not matter what the result is, the server will not
+try to find a better answer to the request or a best match. It is up
+to the resolver to make iterative requests.
+
+Also note that in this implementation there is only one kind of
+request. We could have divided the registered hosts and sub-domains
+and explicitly requested either or, perhaps a cleaner design, but
+we'll keep things simple.
+
+\subsection{a resolver}
+
+The resolver is more complex since we will now have a cache to
+consider and since we will do a iterative lookup procedures to find
+the final answer. We will use a {\tt time} module (we'll have to
+implement it) that will help us to determine if a cache entry is valid
+or not. We will also use a trick and enter a permanent entry in the
+cache that refers to the root server.
+
+\begin{verbatim}
+-module(resolver).
+-export([start/1, stop/0, init/1]).
+
+start(Root) ->    
+    register(resolver, spawn(resolver, init, [Root])).
+
+stop() ->
+    resolver ! stop,
+    unregister(resolver).
+
+init(Root) ->
+    Empty = cache:new(),
+    Inf = time:inf(),
+    Cache = cache:add([], Inf, {dns,  Root}, Empty),
+    resolver(Cache).
+\end{verbatim}
+
+
+\begin{verbatim}
+resolver(Cache) ->
+    receive 
+        {request, From, Req}->
+            io:format("request ~w ~w~n", [From,Req]),
+            {Reply, Updated} = resolve(Req, Cache),
+            From ! {reply, Reply},
+            resolver(Updated);
+        status ->
+            io:format("cache ~w~n", [Cache]),            
+            resolver(Cache);
+        stop ->
+            io:format("closing down~n", []),            
+            ok;
+        Error ->
+            io:format("strange message ~w~n", [Error]),
+            resolver(Cache)
+    end.
+\end{verbatim}
+
+Note that the resolver only knows the root server. It does know in
+which domain it is working. If it can not find a better entry in the
+cache it will send a request to the root. The requests are on the
+form {\tt [www, kth, se]} and if we do not find a match of the whole
+name in the cache we will try with {\tt [kth, se]}. If there is no
+entry for {\tt [kth, se]} nor for {\tt [se]} we will find the entry for
+{\tt []} which will give us a address of the root server. 
+
+When we contact the root server we ask for a entry for the {\tt se}
+domain. We save the answer in the cache and then send a request to the
+se-server asking for the {\tt kth} domain etc. When we have the
+address of the {\tt www} host we send the reply back to the client.
+
+The implementation of the resolve function is quite intricate and it
+takes a while to understand why and how it works. Since the resolving
+of a name can change the cache the procedure returns both the reply
+and an updated cache.  The idea is now as follows: {\tt lookup/2} will
+look in the cache and return either {\tt unknown}, {\tt invalid} in
+case a old value was found or, a valid entry, {\tt \{ok, Reply\}}. If
+the domain name was unknown or invalid a recursive procedure takes
+over, if a entry is found this can be returned directly.
+
+\begin{verbatim}
+resolve(Name, Cache)->
+    io:format("resolve ~w ", [Name]),
+    case cache:lookup(Name, Cache) of
+        unknown ->
+            io:format("unknown ~n ", []),
+            recursive(Name, Cache);
+        invalid ->
+            io:format("invalid ~n ", []),
+            recursive(Name, remove(Name, Cache));
+        {ok, Reply} ->
+            io:format("found ~w ~n ", [Reply]),
+            {Reply, Cache}
+    end.
+
+\end{verbatim}
+
+The recursive procedure will divide the domain name into two parts. If
+we are looking for {\tt [www, kth, se]} we should first look for {\tt
+[kth, se]} and then use this value to request an address for {\tt
+www}. The best way to find an address for {\tt [kth, se]} is to use
+the resolve procedure.
+
+We now make the assumption that {\tt resolve/2} actually does return
+something (remember that the cache holds the permanent entry for the
+root domain {\tt []}) and that it's either {\tt unknown} or a server
+entry {\tt {dns, Srv}}. We could have a situation where it returns a
+host entry {\tt {host, Hst}} but then our setup would be faulty. 
+
+\begin{verbatim}
+recursive([Name|Domain], Cache) ->
+    io:format("recursive ~w ", [Domain]),
+    case resolve(Domain, Cache) of    
+        {unknown, Updated} ->
+            io:format("unknown ~n", []),
+            {unknow, Updated};
+        {{dns, Srv}, Updated} ->
+            Srv ! {request, self(), Name},
+            io:format("sent ~w request to ~w ~n", [Name, Srv]),
+            receive 
+                {reply, Reply, TLL} ->
+		    Expire = time:add(time:now(), TTL),
+                    {Reply, add([Name|Domain], Expire, Reply, Updated)}
+            end
+    end.
+\end{verbatim}
+
+If the domain {\tt [kth, se]} turns out to be unknown then there is no
+way that {\tt [www, kth, se]} could be known so an unknown value can
+be returned directly. If however, we have a domain name server for
+{\tt [kth, se]} we should of course ask this for the address to {\tt
+www}. We send a request and wait for a reply, whatever we get is the
+final answer. We return the reply but also update the cache with a new
+entry for the full name {\tt [www, kth, se]}. 
+
+Left to implement are the functions to handle the cache and the
+time. This is one way of solving the time module. We will of course
+have a millennium bug if we expect this to work over midnight but for
+our purposes it will be ok. We take advantage of the fact that any
+atom is greater then any integer so {\tt inf} will always be greater
+than any time.
+
+
+\begin{verbatim}
+-module(time).
+-export([now/0, add/2, inf/0, valid/2]).
+
+now() ->
+    {H, M, S} = erlang:time(),
+    H*3600+M*60+S.
+
+inf() ->
+    inf.
+
+add(S, T) ->
+    S + T.
+    
+valid(C,T) ->
+    C > T.
+\end{verbatim}
+
+Left to implement is the lookup procedure which will be almost
+identical to the lookup procedure of the server. We must however store
+a time-to-live value which each entry and check if the entry is still
+valid when performing the lookup. 
+
+\subsection{a host}
+
+We create some host only in order to have something to register and
+something to communicate with. The only thing our hosts will do is
+reply to {\tt ping} messages. The only thing we have to remember is to
+register with a DNS server.
+
+\begin{verbatim}
+-module(host).
+
+-export([start/3, stop/1, init/2]).
+
+start(Name, Domain, DNS) ->
+    register(Name, spawn(host, init, [Domain, DNS])).
+
+stop(Name) ->
+    Name ! stop,
+    unregister(Name).
+
+
+init(Domain, DNS) ->
+    DNS ! {register, Domain, {host, self()}},
+    host().
+
+host() ->
+    receive
+        {ping, From} ->
+            io:format("ping from ~w~n", [From]),
+            From ! pong,
+            host();
+        stop ->
+            io:format("closing down~n", []),
+            ok;
+        Error ->
+            io:format("strange message ~w~n", [Error]),
+             host()
+    end.
+\end{verbatim}
+
+Note that a host is started by giving it a name and a DNS server. The
+name is only the name of the host, for example {\tt www}, the location
+of the name server in the tree decides the full domain name.
+
+\subsection{some test sequences}
+
+We will not implement any clients but could need some functions to
+test our system. Given that we have a hierarchy of name servers with
+registered hosts we can use a resolver to find a host and then ping
+it. We wait for 1000ms for a reply from the resolver and 1000 ms
+for a ping reply.
+
+\begin{verbatim}
+-module(client).
+-export([test/3]).
+
+test(Host Res) ->
+   io:format("looking up ~w~n", [Host]),
+   Res ! {request, self(), Host},
+   receive 
+     {reply, {host, Pid}} ->
+         io:format("sending ping ...", []),
+         Pid ! {ping, self()},
+         receive 
+             pong ->
+	       io:format("pong reply~n")
+	     after 1000 ->
+	       io:format("no reply~n")
+         end;
+     {reply, unknown} ->
+         io:format("unknown host~n", []),
+	 ok;
+     Strange ->
+         io:format("strange reply from resolver: ~w~n", [Strange]),
+	 ok
+     after 1000 ->
+         io:format("no reply from resolver~n", []),
+         ok
+   end.
+\end{verbatim}
+
+Before the seminar you should have implemented the missing pieces so
+that you can take part in a larger name server network. You will
+either be a server, resolver or managing a set of hosts and clients.
+
+
+\section{A first try}
+
+Now let's set up a network of name severs. Start some Erlang shells on
+different computers. Let's have name servers one dedicated computers
+and have several hosts and clients on others.
+
+Remember to start Erlang using the {\tt -name} and {\tt -setcookie}
+parameters. A root server on 130.237.250.69 could be started like
+this:
+
+\begin{verbatim}
+erl -name root@130.237.250.69 -setcookie dns
+Eshell V5.4.13  (abort with ^G)
+(root@130.237.250.69)1> server:start().
+true
+\end{verbatim}
+
+We then start servers for the top-level domains. Notice how they
+register with their local name only, not the full domain name. This is
+what it would look like on two machines: 130.237.250.123, 130.237.250.145.
+
+\begin{verbatim}
+erl -name se@130.237.250.123 -setcookie dns
+Eshell V5.4.13  (abort with ^G)
+(se@130.237.250.69)1> server:start(se, {server, 'root@130.237.250.69'}).
+true
+\end{verbatim}
+
+
+\begin{verbatim}
+erl -name kth@130.237.250.145 -setcookie dns
+Eshell V5.4.13  (abort with ^G)
+(kth@130.237.250.145)1> server:start(kth, {server, 'se@130.237.250.123'}).
+true
+\end{verbatim}
+
+Now set up more servers and register some hosts. Start a resolver and
+experiment.
+
+\begin{verbatim}
+erl -name hosts@130.237.250.152 -setcookie dns
+Eshell V5.4.13  (abort with ^G)
+(hosts@130.237.250.152)1> host:start(www, www, {server, 'kth@130.237.250.145'}).
+true
+(hosts@130.237.250.152)1> host:start(ftp, ftp, {server, 'kth@130.237.250.145'}).
+true
+\end{verbatim}
+
+
+\section{Using the cache}
+
+In the vanilla set-up the time-to-live is zero seconds. What happens
+if we extend this to two or four seconds. How much is traffic
+reduced?  Extend it to a minute and then move hosts, that is close
+them down and start them up registered under a new name. When is the
+new server found, how many nodes needed to know about the change?
+
+Our cache also suffers from old entries that are never
+removed. Invalid entries are removed and updated but if we never
+search for the entry we will not remove it. How can the cache be
+better organized? How would we do to reduce search time? Could we use
+a hash table or a tree?
+
+\end{document}

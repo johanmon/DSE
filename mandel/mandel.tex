@@ -1,0 +1,246 @@
+\documentclass[a4paper,11pt]{article}
+
+\usepackage{ifthen}
+\usepackage[latin1]{inputenc}
+
+\usepackage{verbatim}
+
+\usepackage[breaklinks=true,
+            bookmarksnumbered=true,
+            pdftitle={Distributed Computing},
+            pdfauthor={Johan Montelius},
+            pdfsubject={Distributed Mandelbrot set},
+            pdfkeywords={distributed computing erlang}
+            ]{}
+
+\newcommand{\nnsection}[1]{
+\section*{#1}
+\addcontentsline{toc}{section}{#1}
+}
+
+\begin{document}
+
+\begin{center}
+\vspace{20pt}
+\textbf{\large Generating a Mandelbrot image }\\
+\vspace{10pt}
+\textbf{Johan Montelius}\\
+\vspace{10pt}
+\today{}
+\end{center}
+
+\nnsection{Introduction}
+
+In this exercise you will implement a distributed Mandelbrot set
+generator, or rather an image generator. Since calculating Mandelbrot
+sets can be quite time consuming we would of course like to make use
+of as much resources as possible and then why not try to use all the
+laptops we have in a class.
+
+You should do some reading so that you understand the basics of what
+the Mandelbrot set is and why it can generate some beautiful
+images; this text only contains a minimal explanation.
+
+\section{Mandelbrot}
+
+The Mandelbrot set is defined as the set of complex numbers $c$ for
+which the sequence $z_n$ does not approach infinity. The value $z_n$
+is defined as follows:
+
+\begin{eqnarray*}
+    z_0 &= &0 \\ 
+    z_{n+1} & = &z_n² + c
+\end{eqnarray*}
+
+If you remember how to do the square of a complex numbers you know
+everything there is to know to start:
+
+$$ (x + yi)² = x² - y² + 2xyi$$
+
+How do we know is a complex number $(x + yi)$ belongs to the
+Mandelbrot set. We could of course start to compute $z_n$ for higher
+values and see if we ever hit infinity but that would of course take
+a very long time (to say the least). 
+
+An observation saves us from spending the rest of our lives computing
+$z_n$: {\em if $|z_n| >= 2$ then there is no turning back, $z_n$ will
+  only increase in size}. The absolute value of a complex number is of
+course:
+
+$$|(x + yi)| = \sqrt{x² + y²}  $$
+
+
+So given a maximum value of $n$, we can for
+any complex number $c$ say if {\em definitely does not belong} to the
+Mandelbrot set or it {\em could possibly belong} to the set but we are
+not quite sure. In the case where we know for sure that the number does
+not belong to the set we also have a value $i$ which was the point
+where $|z_i| >= 2$. This value $i$ is the color we need to generate a
+beautiful Mandelbrot image.
+
+\subsection{complex numbers}
+
+Since we are going to work with complex numbers we might as well start
+by implementing a module to handle these. Let's make it simple and
+represent a complex number as a tuple with its real and imaginary
+values. Create a module {\tt cmplx} that exports the following
+functions:
+
+\begin{itemize}
+ \item {\tt new(X, Y)} : returns the complex number with real value X and imaginary Y
+ \item {\tt add(A, B)} : adds two complex numbers
+ \item {\tt sqr(A)} : squares a complex number
+ \item {\tt abs(A)} : the absolute value of A
+\end{itemize}
+
+You have a choice of how to represent complex numbers but why not make
+it easy and represent them as a tuple {\tt \{X, Y\}} that will give us
+easy access to its components.
+
+You might want to use the {\tt sqrt/1} function exported from the {\tt
+  math} module when calculating the absolute value.
+
+\subsection{the brot client}
+
+For no reason at all we will call our first module {\tt brot}, it will
+implement the client process that will do the computation to determine
+if a given value $x + yi$ possibly belongs to the set. 
+
+Implement a function {\tt mandelbrot/3} that is given the complex
+number and the maximum number of iterations, $m$, that it is
+allowed to use. It should return the value $i$ at which $|z_i| >= 2$ or
+$0$ if it does not for any $i < m$ i.e. it should always return a
+value in the range $0..(m-1)$.
+
+\begin{verbatim}
+mandelbrot(C, M) -> 
+    Z = cmplx:new(...,...),
+    I = 0,
+    test(I, Z, C, M).
+\end{verbatim}
+
+The {\tt test/4} function should of course test first of all if we
+have reached the maximum iteration, in which case it returns zero, or if
+the absolute value of {\tt Z} is greater than 4, in which case it returns
+{\tt I}. Make sure that you use the functions exported from the {\tt cmplx}
+module.
+
+Do some test to see that the function works (here I'm writing the
+complex numbers directly knowing that we represent them as tuples,
+this is of course cheating but very convenient).
+
+\begin{itemize}
+ \item {\tt brot:mandelbrot(\{0.8, 0\}, 30)}
+ \item {\tt brot:mandelbrot(\{0.5, 0\}, 30)}
+ \item {\tt brot:mandelbrot(\{0.3, 0\}, 30)}
+ \item {\tt brot:mandelbrot(\{0.27, 0\}, 30)} 
+ \item {\tt brot:mandelbrot(\{0.26, 0\}, 30)}
+ \item {\tt brot:mandelbrot(\{0.255, 0\}, 30)}
+\end{itemize}
+
+What is happening? Which values could possibly belong to the
+Mandelbrot set - how sure are you? Do some more testing, why stop at
+thirty iterations?
+
+
+\subsection{a process}
+
+Once we have a working mandelbrot tester the rest is just
+engineering. We will wrap the Mandelbrot test function in a process
+that will eagerly contact a server to request for something to
+test. The server will reply with a task that also includes a process
+identifier to which the result should be sent. 
+
+
+These are the messages that we will use:
+
+\begin{itemize}
+ \item {\tt \{req, From\}}: a request for work from client From
+ \item {\tt \{pos, Pr, P, C, M\}}: a position, P, to investigate given
+   complex value C and maximum iterations M, result is sent to the
+   printer Pr
+ \item {\tt \{res, P, Res\}}: the result Res at position P sent to the printer
+ \item {\tt done}: no more work to be found, terminate
+\end{itemize}
+
+The position is a tuple {\tt \{C, R\}}
+i.e. the column and row of the image that we will eventually
+generate i.e. the position could be {\tt \{230,435\}} in a
+1920x1080 image, while the complex value that we are looking for is
+{\tt \{0.34, 1,2\}}. Note that the {\tt brot} module does not really
+care what the position is, it will simply pass this information to
+the printer process.
+
+Here is some skeleton code that will get you starting:
+
+\verbatiminput{brot.erl}
+
+We now have a process that could be helpful in generating a Mandelbrot
+image. We only need a server process that can delegate work and a
+printing process that will take the generated image and write it to a file.
+
+\subsection{the server}
+
+Open a new module called {\tt mandel}, this module will implement a
+server process that keeps track of and delegate work to the brot
+clients. The process will delegate tasks row by row and pixel by
+pixel. In the end the printer should be sent the calculated values for
+each pixel so it can assemble them into a picture. The client is thus
+given the current pixel to calculate but also the corresponding
+complex value. We therefor need to map the row and column value to
+complex value but this is of course depending on what image we are
+looking for.
+
+We solve this by telling the mandel server the lower left complex
+value of our image and the increment it should use to calculate the
+complex values for the pixels. Assume that we want to generate a 1920
+by 1080 image starting at (-0.5,0.2i) we could use an increment of
+0.001. The image would then have its upper right corner in (1.980-0.5,
+(1.08+0.2)i).
+
+We also need to pass a maximum value of iterations that the brot
+client should use. In order to make it easier for the printer function
+to choose the colors we tell the printer that we will use a color depth
+of each R-G-B component of $d$ while the brot client can use $d³$
+iterations. For example, if the color depth is 8 (that is three bits
+for each component) the brot client can then use a depth of $8³$ and
+will thus reply with a value in the range $0...511$. This value
+can then easily be transformed to RGB components. 
+
+This is just one simple way of coloring our picture and if you want to
+explore Mandelbrot images further there is a lot to learn in how to do
+the coloring right.
+
+
+\subsection{the printer}
+
+The printer process should when started be given the width, height and
+color depth (remember depth of each RGB component) of the image that
+should be generated. It will sit and wait for incoming messages that
+hopefully are sent in order.
+
+Each incoming value is converted to a RGB components and this could,
+as mentioned above, be done in more than one way. In this simple
+example the value is calculate modulo the color depth to obtain the R
+value. It is then divided by the depth and second modulo operation
+gives us the G value, two more operations and we have the B
+value. This will give an increasing red color that is then switched to
+a dark red color with some green in. Look at the generated images and
+you will soon ask yourself how the coloring can be done differently.
+
+When we have all pixels the image is written to a file. We could write
+the image incrementally but there is a large overhead in each file
+operations so we rather wait as long as possible.
+
+How do we know that messages arrive in order? Do they have to arrive
+in order? What do we do if a brot client crashes, should we wait
+forever for a value?
+
+The given printer module generates a so call PPM file. This is a very
+crude image format that does not compress the image. A better solution
+would be to generate a PNG image but this is not for this exercise -
+but not as hard as you might think so do some reading and you will
+solve it, you will earn a lot about compression.
+
+
+\end{document}

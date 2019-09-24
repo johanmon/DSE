@@ -1,0 +1,272 @@
+\documentclass[a4paper, 11pt]{article}
+
+\usepackage{ifthen}
+\usepackage[latin1]{inputenc}
+
+
+\newcommand{\nnsection}[1]{
+\section*{#1}
+\addcontentsline{toc}{section}{#1}
+}
+
+\begin{document}
+
+\begin{center}
+\vspace{20pt}
+\textbf{\large Toky: a token based distributed mutual-exclusion lock}\\
+\vspace{10pt}
+\textbf{Johan Montelius}\\
+\vspace{10pt}
+\today{}
+\end{center}
+
+\nnsection{Introduction}
+
+Your task is to implement a distributed mutual-exclusion lock. The
+lock will use a token that is the key to enter the critical
+section. In this tutorial you could take advantage of the environment
+implemented in the Muty seminar. The worker and gui modules could be
+adapted and be used to experiment and visualize the final solution. In the
+description below we will only describe the implementation of the lock
+algorithm.
+
+\section{The architecture}
+
+The architecture consists of a set of workers that needs to coordinate
+their entry of a critical section. Each worker is communicating with
+its own lock process and the lock processes determine in what order
+the workers should be allowed to enter the critical section.
+
+
+\section{the lock}
+
+The algorithm that we are to implement is by Neilsen-Mizuno and is a
+token based algorithm. There is only one token in the system and this
+is passed between processes that request to move into the critical
+section.
+
+The first token based algorithm that one learns is probably some
+variant of a token-ring algorithm. A set of lock processes are then
+linked in a virtual ring and pass a token around in the ring. A
+process that needs to move into the critical section will then wait
+for the token and hold it until it leaves the critical section. In
+the algorithm by Neilsen-Mizuno is more efficient and a lot more fun
+to implement.
+
+\subsection{the node}
+
+A lock process, or a node, in the system can hold a token. We will
+make sure that there is only one token in the system and this is of
+course the most important invariant to uphold. A worker can order a
+lock process to take the token, once it is taken the token is handed
+over to the worker. When the worker exits from the critical section
+the token is returned to the lock process. 
+
+The difference from a token-ring algorithm is that a lock process will
+keep the token in order for the worker to request it again. This can
+continue until another process requests the token. How the token is
+passed around between lock processes is the interesting part of the
+algorithm.
+
+\subsection{the row}
+
+The lock processes are linked in a row where nodes have links only in
+one direction. One node is the root node and the nodes in the row have
+their pointers set towards this root. When a node requests the lock it
+will take over the root role and make the nodes between itself and
+the previous root point towards it. 
+
+An invariant of the algorithm is that if one follows the links one will 
+find the root node that holds or will eventually hold the
+token. A simple initial configuration is to link all nodes in one row
+and let the node in the end of the row be the root node and hold the token.
+
+The nodes that have requested the lock are also linked together in a
+secondary chain. They form a chain of nodes where the first node holds
+the token. The last node in this chain is also the root node of the
+tree. The token will move from node to node following the chain and
+thus eventually end up at the root node.
+
+If a process is asked by its master process to take the lock, the process
+will send a request message towards the root. The message has the
+following structure:
+
+\begin{itemize}
+\item {\tt \{request, From, Requester\}}: where {\tt From} is the send
+  of the message and {\tt Requester} is the requester of the lock.
+\end{itemize}
+
+After having sent the request message the node becomes the new root 
+
+A node that receives a request message will forward the message
+towards the root but replace the {\tt From} field to the process
+identifier of the node itself. It will also change its root pointer to
+point to the send of the message. The root pointer is changed since
+the requester will eventually receive the token and we need to
+maintain the invariant. Keeping the root pointer as is is dangerous
+since the node at the end of the path will when it moves out of the
+critical section forward the token directly to the requester. 
+
+A root node that receives a request message will as any node set its
+root pointer to the sender of the message but must also make sure that
+the requester eventually gets the token. The procedure now depends on
+the state of the node: if the node holds the token it is sent directly
+to the requester otherwise the process identifier of the requester is
+kept as the next process to send the token to once the master of the
+node returns the token.
+
+\subsection{the queue}
+
+A worker that has ordered its lock process to take the lock will be
+suspended waiting for the process to hand it the token. The lock
+process will eventually receive the token and then hand it over to the
+worker even if it has another lock process waiting for the token. 
+
+A node that has requested the lock knows that it will either receive
+the token directly from a root node holding the token or be linked to
+by a root node that will eventually receive the token. The path of
+linked nodes that have requested the lock thus forms a queue of
+suspended locks. 
+
+
+\section{the implementation}
+
+
+A lock process, or node, has only four properties: 
+
+\begin{itemize}
+
+\item {\bf Root}: is true if the node is the root node, otherwise it is a
+ process identifier of a node closer to the root.
+
+\item {\bf Last}: is true if the node is the last in a chain of
+  waiting nodes, otherwise it is a process identifier of the next node
+  in the chain.
+
+\item {\bf Suspended}: is false if the master process is not suspended
+  waiting for the token otherwise it is the process identifier of the
+  waiting master process.
+
+\item {\bf Token}: true is the node is holding the toke, false otherwise.
+
+\end{itemize}
+
+The names of the properties are carefully chosen so that we can write
+tests in a logical way. If we want to test if a node is a root node we
+will write:
+
+\begin{verbatim}
+    if
+      Root ->
+           do this;
+      true ->
+           do this where Root is the pointer towards the root
+    end
+\end{verbatim}
+
+You will see that the code becomes quite compact.
+
+Let's look at the messages. We only need two messages from the worker
+to the lock process. One to order the process to take the lock and one
+to release the lock. The lock process need only one message to reply
+to the worker.
+
+\begin{itemize}
+\item {\tt \{take, Master\}}: the lock is orderd by the master to take the lock
+\item {\tt taken}: the lock notifies the master that the lock is taken
+\item {\tt release}: the master releases the lock 
+\end{itemiize}
+
+The messages between lock processes are also very simple. Either a
+process forwards a request or it hands over the token.
+
+\begin{itemize}
+\item {\tt \{request, From, Requester\}}: a request from the
+  Requester, delivered by From.
+\item {\tt token}: the token
+\end{itemiize}
+
+The let's look at the algorithm; if a node receives a request three
+things could happen. If the node is a root and holds the token the
+token is simply passed to the requester. If the root is not holding
+the token we know that the token will eventually be passed to the node
+so we add the requester as the next node in the chain of waiting
+nodes. It is important to realize that the root node is the last node
+in the chain since the request arrived. 
+
+\begin{verbatim}
+	{request, From, Requester} ->
+	    if Root -> 
+		if Token ->
+		    Requester ! token,
+		    node(From, Last, Suspended, false);
+		true ->
+		    node(From, Requester, Suspended, false)
+		end;
+	     true ->
+		Root ! {request, self(), Requester},
+		node(From, Last, Suspended, Token)
+	    end;
+\end{verbatim}
+
+If the node is not a root node we simply pass the request forward but
+replace the sender field to the process identifier of the node. In
+all cases we change our root pointer to the process identifier of the
+sender of the request.
+
+If the node receives the token it is sent from another lock process
+that has forwarded the token along the chain of waiting nodes. The
+only reason that a node is given the token is that its master is
+suspended waiting for the lock. The node can then simply inform the
+master that the lock is taken
+
+
+if the master process is
+suspended it should be given the token otherwise we must check if we
+are the last node in the chain if waiting nodes. If we are the last
+node we simply keep the token but if we have a node waiting we pass
+the token along.
+
+\begin{verbatim}
+	token ->
+	    Suspended ! taken,
+	    node(Root, Last, false, false)
+	end;
+\end{verbatim}
+
+The request from a master process to take the lock is divided into two
+cases. If the node holds the token then it can be handed over directly
+to the master process. Otherwise a request is sent towards the
+root. The node then becomes a root node in a new tree. The process
+identifier of the master is added as suspended.
+
+\begin{verbatim}
+	{take, Master} ->
+	    if
+		Token ->
+		    Master ! taken,
+		    node(Root, Last, false, false);
+		true ->
+		    Root ! {request, self(), self()},
+		    node(true, Last, Master, Token)
+	    end;
+\end{verbatim}
+
+When the master releases the lock 
+
+
+\section{performance}
+
+The main advantage of the algorithm is that a lock process can hold
+the token as long as no other process is requesting the lock. The
+delay obtaining the lock is then constant and so is the release
+operation.
+
+\begin{itemize}
+\item What is the average number of messages needed to request the lock? 
+\item How does this wary with load? 
+\item What is the synchronization delay?
+\item In what scenarios is it a good algorithm to use?
+\end{itemize}
+
+\end{document}
